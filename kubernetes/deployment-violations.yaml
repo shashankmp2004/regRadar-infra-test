@@ -1,0 +1,134 @@
+# Kubernetes Deployment with Compliance Violations
+# This configuration intentionally contains violations for demo purposes
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: production
+  labels:
+    app: api-server
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      # VIOLATION: Running as root (SOC2, FedRAMP)
+      containers:
+      - name: api
+        image: acme/api-server:latest  # VIOLATION: Using 'latest' tag
+        ports:
+        - containerPort: 8080
+        
+        # VIOLATION: No resource limits (can lead to DoS)
+        # Missing: resources.limits
+        
+        # VIOLATION: Running as privileged container
+        securityContext:
+          privileged: true  # Should be false
+          runAsUser: 0      # VIOLATION: Running as root
+          allowPrivilegeEscalation: true  # Should be false
+        
+        # VIOLATION: Secrets in environment variables
+        env:
+        - name: DATABASE_PASSWORD
+          value: "SuperSecretPassword123"  # Should use secretKeyRef
+        - name: API_KEY
+          value: "sk-live-abc123xyz789"    # Should use secretKeyRef
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        
+        # VIOLATION: No liveness/readiness probes
+        # Missing: livenessProbe, readinessProbe
+        
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        
+      # VIOLATION: No security context at pod level
+      # Missing: securityContext.fsGroup, runAsNonRoot
+      
+      volumes:
+      - name: data
+        hostPath:  # VIOLATION: Using hostPath (security risk)
+          path: /var/data
+          type: Directory
+          
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: production
+spec:
+  type: LoadBalancer  # VIOLATION: Exposed directly to internet without WAF
+  selector:
+    app: api-server
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+
+---
+# VIOLATION: NetworkPolicy missing - all pods can communicate
+# Should have NetworkPolicy to restrict traffic
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: production
+data:
+  # VIOLATION: Sensitive data in ConfigMap instead of Secret
+  database_host: "payment-db.internal"
+  database_port: "3306"
+  database_name: "payments"
+  encryption_key: "base64encodedkey=="  # VIOLATION: Should be in Secret
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: production
+# VIOLATION: No automountServiceAccountToken: false
+# VIOLATION: Missing annotations for IAM role binding
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: api-service-account
+  namespace: production
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin  # VIOLATION: Over-privileged - using cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod
+  namespace: production
+spec:
+  containers:
+  - name: debug
+    image: ubuntu:latest
+    command: ["sleep", "infinity"]
+    securityContext:
+      capabilities:
+        add:
+          - NET_ADMIN  # VIOLATION: Excessive capabilities
+          - SYS_ADMIN  # VIOLATION: Very dangerous capability
+          - NET_RAW
